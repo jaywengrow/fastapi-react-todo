@@ -1,48 +1,64 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
+from sqlmodel import SQLModel, Field, Session, create_engine, select
+from typing import Optional, List
 
 app = FastAPI()
 
-# Allow CORS for frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class Todo(BaseModel):
-    id: int
+# Define Todo model using SQLModel
+class Todo(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
     title: str
     completed: bool = False
 
-# In-memory storage for simplicity
-fake_db: List[Todo] = []
+# Create SQLite database engine
+sqlite_file_name = "./todos.db"
+sqlite_url = f"sqlite:///{sqlite_file_name}"
+engine = create_engine(sqlite_url, echo=True)
 
-@app.get("/todos", response_model=List[Todo])
-def get_todos():
-    return fake_db
+# Create database and tables
+SQLModel.metadata.create_all(engine)
 
-@app.post("/todos", response_model=Todo)
+@app.post("/todos/", response_model=Todo)
 def create_todo(todo: Todo):
-    fake_db.append(todo)
-    return todo
+    with Session(engine) as session:
+        session.add(todo)
+        session.commit()
+        session.refresh(todo)
+        return todo
+
+@app.get("/todos/", response_model=List[Todo])
+def read_todos():
+    with Session(engine) as session:
+        todos = session.exec(select(Todo)).all()
+        return todos
+
+@app.get("/todos/{todo_id}", response_model=Todo)
+def read_todo(todo_id: int):
+    with Session(engine) as session:
+        todo = session.get(Todo, todo_id)
+        if not todo:
+            raise HTTPException(status_code=404, detail="Todo not found")
+        return todo
 
 @app.put("/todos/{todo_id}", response_model=Todo)
-def update_todo(todo_id: int, todo: Todo):
-    for idx, t in enumerate(fake_db):
-        if t.id == todo_id:
-            fake_db[idx] = todo
-            return todo
-    raise HTTPException(status_code=404, detail="Todo not found")
+def update_todo(todo_id: int, updated_todo: Todo):
+    with Session(engine) as session:
+        todo = session.get(Todo, todo_id)
+        if not todo:
+            raise HTTPException(status_code=404, detail="Todo not found")
+        todo.title = updated_todo.title
+        todo.completed = updated_todo.completed
+        session.add(todo)
+        session.commit()
+        session.refresh(todo)
+        return todo
 
 @app.delete("/todos/{todo_id}")
 def delete_todo(todo_id: int):
-    for idx, t in enumerate(fake_db):
-        if t.id == todo_id:
-            del fake_db[idx]
-            return {"ok": True}
-    raise HTTPException(status_code=404, detail="Todo not found")
+    with Session(engine) as session:
+        todo = session.get(Todo, todo_id)
+        if not todo:
+            raise HTTPException(status_code=404, detail="Todo not found")
+        session.delete(todo)
+        session.commit()
+        return {"ok": True}
